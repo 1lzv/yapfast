@@ -21,9 +21,9 @@ use yapfast_core::runtime::BackgroundRuntime;
 /// Mouse buttons share the saved scan-code field, tagged above Windows' 16-bit
 /// scan codes so existing keyboard bindings keep their meaning.
 #[cfg(windows)]
-const MOUSE_4: u32 = 0xFFFF_0004;
+pub(crate) const MOUSE_4: u32 = 0xFFFF_0004;
 #[cfg(windows)]
-const MOUSE_5: u32 = 0xFFFF_0005;
+pub(crate) const MOUSE_5: u32 = 0xFFFF_0005;
 
 /// A key recorded in settings.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

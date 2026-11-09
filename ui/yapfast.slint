@@ -1236,6 +1236,14 @@ export component YapfastWindow inherits Window {
     in-out property <int> talk-delay: 20;
     in-out property <string> talk-note;
     callback record-talk-key(bool);
+    /// The toggle-mute key: see VoiceSettings. A press of it, from any app,
+    /// toggles the microphone's mute in a call.
+    in-out property <string> toggle-mute-key;
+    in-out property <bool> toggle-mute-recording;
+    in-out property <string> toggle-mute-note;
+    callback record-toggle-mute-key(bool);
+    callback clear-toggle-mute-key();
+    callback global-toggle-mute();
     /// Calls' microphone and speakers volume: see VoiceSettings.
     in-out property <int> microphone-volume: 100;
     in-out property <int> speaker-volume: 100;
@@ -4100,6 +4108,8 @@ export component YapfastWindow inherits Window {
             sensitivity <=> root.sensitivity; gate-level: root.gate-level; gate-sending: root.gate-sending; gate-meter-note: root.gate-meter-note;
             input-mode <=> root.input-mode; talk-key: root.talk-key; talk-recording <=> root.talk-recording;
             talk-delay <=> root.talk-delay; talk-note: root.talk-note;
+            toggle-mute-key: root.toggle-mute-key; toggle-mute-recording <=> root.toggle-mute-recording;
+            toggle-mute-note: root.toggle-mute-note;
             microphone-volume <=> root.microphone-volume; speaker-volume <=> root.speaker-volume;
             soundboard-volume <=> root.soundboard-volume; entrance-servers: root.entrance-servers;
             entrance-server <=> root.entrance-server; entrance-sound: root.entrance-sound;
@@ -4110,6 +4120,8 @@ export component YapfastWindow inherits Window {
             choose-entrance-sound(id) => { root.choose-entrance-sound(id); }
             call-volumes-changed => { root.call-volumes-changed(); }
             record-talk-key(on) => { root.record-talk-key(on); }
+            record-toggle-mute-key(on) => { root.record-toggle-mute-key(on); }
+            clear-toggle-mute-key => { root.clear-toggle-mute-key(); }
             select-microphone(index) => { root.select-microphone(index); }
             select-speaker(index) => { root.select-speaker(index); }
             select-camera(index) => { root.select-camera(index); }

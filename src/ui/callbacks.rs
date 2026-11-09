@@ -2091,7 +2091,32 @@ pub(super) fn bind_callbacks(window: &YapfastWindow, adapter: &Rc<RefCell<Adapte
     let weak = window.as_weak();
     window.on_record_talk_key(move |on| {
         if let Some(window) = weak.upgrade() {
+            window.set_toggle_mute_recording(false);
             window.set_talk_recording(on);
+        }
+    });
+    let weak = window.as_weak();
+    window.on_record_toggle_mute_key(move |on| {
+        if let Some(window) = weak.upgrade() {
+            window.set_talk_recording(false);
+            window.set_toggle_mute_recording(on);
+        }
+    });
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_clear_toggle_mute_key(move || {
+        if let Some(window) = weak.upgrade() {
+            window.set_toggle_mute_recording(false);
+            state.borrow_mut().clear_toggle_mute_key(&window);
+        }
+    });
+    // The toggle-mute key, from any app: only in a call, as the mute button
+    // would in one.
+    let state = adapter.clone();
+    let weak = window.as_weak();
+    window.on_global_toggle_mute(move || {
+        if let Some(window) = weak.upgrade() {
+            state.borrow_mut().toggle_mute_pressed(&window);
         }
     });
     let state = adapter.clone();

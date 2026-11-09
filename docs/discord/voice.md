@@ -598,3 +598,55 @@ the network runtime. The ignored tests above, and
 `push_to_talk_sends_only_while_the_key_is_held` against the fake Discord, which
 checks that beeps with the key up send nothing and with it held do, run by
 hand; see their comments for what each needs.
+
+## Toggle mute
+
+Settings → Voice & video → Toggle mute takes a key, or on Windows Mouse 4
+(XBUTTON1) or Mouse 5 (XBUTTON2), that mutes the microphone with one press and
+unmutes it with the next, in any app and in any input mode, so voice activity
+stays on (`toggle_mute_key` in `layout.json`, the same `Keybind` push to talk
+keeps, and the same reserved values for the side buttons). "Record keybind"
+takes the next key or side button pressed, Escape stops, and Clear forgets it.
+There is no default key.
+
+A press does what the mute button does in a call, `Command::Mute` through
+`Application::dispatch`, so the sound plays and the voice worker closes the
+microphone's capture and tells Discord in the voice state (`self_mute`), which
+the others on the call see, in a server's voice channel and in a private call
+alike; Matrix calls mute the same way. Nothing is only silenced locally.
+Unmuting while deafened undeafens too, as the button does. Out of a call the
+key does nothing, unlike the button, which then sets whether the next call
+starts muted. The call answers a mute a moment after it's asked for, so
+`next_mute` in `src/ui.rs` goes on from the last mute the key asked for while
+that answer is under 1.5 s late: two quick presses mute and unmute, and never
+ask for the same mute twice.
+
+`src/toggle_mute.rs` watches the key apart from push to talk's watcher, so the
+two keys, their hooks and their modes don't depend on each other, and it runs
+whether or not the input mode is push to talk. On Windows a low-level hook
+(`WH_KEYBOARD_LL`, or `WH_MOUSE_LL` for the side buttons) runs on a thread of
+its own, with no DLL injected into any other process, and always calls
+`CallNextHookEx`, so every event goes on to the app in front untouched. The
+hook procedure only decodes the event, counts a press once (a side button's
+down message, or a key's down message when it wasn't already down, so a held
+key's repeats don't count) and posts a message to its own thread's loop, which
+asks the window to toggle; Windows removes a hook that's slow to answer, and
+the thread sleeps in `GetMessageW` between presses, so it uses no CPU while
+nothing is pressed. As push to talk's hook does, it hears nothing aimed at a
+program running as administrator unless Yapfast does too.
+
+A side button recorded as the toggle-mute key doesn't also go back or forward
+through the conversations in Yapfast's window, as the mouse's side buttons
+otherwise do there; it only toggles.
+
+Where there's no hook, as on Linux for now, the key works while Yapfast's
+window is in front, and settings say so. A letter key is also typed where
+the focus is, as any key is; a side button or a function key avoids that.
+
+Checked in unit tests for the decoding of both side buttons, one toggle per
+press, a held key's repeats, the layout round trip, `next_mute` and the call's
+mute in the preview; against the fake Discord, by
+`toggling_mute_reaches_the_others_in_server_and_private_calls`; and by an
+ignored Windows test that clicks Mouse 4 with `SendInput` through the real
+hook and counts the toggles, which needs a real desktop
+(`mouse_4_toggles_once_per_click_through_the_real_hook`).

@@ -516,6 +516,11 @@ export component VoiceSettings inherits VerticalLayout {
     in-out property <int> talk-delay: 20;
     /// Where the key works: in every app, or only in Yapfast and why.
     in property <string> talk-note;
+    /// The toggle-mute key's name, empty while there's none, whether the next
+    /// key pressed becomes it, and where it works.
+    in property <string> toggle-mute-key;
+    in-out property <bool> toggle-mute-recording;
+    in property <string> toggle-mute-note;
     /// Discord is linked, so its calls' noise suppression shows.
     in property <bool> discord;
     /// How loud every call sends the microphone and plays, as sliders'
@@ -549,6 +554,9 @@ export component VoiceSettings inherits VerticalLayout {
     callback preferences-changed;
     /// Starts or stops recording the push-to-talk key.
     callback record-talk-key(bool);
+    /// Starts or stops recording the toggle-mute key, or forgets it.
+    callback record-toggle-mute-key(bool);
+    callback clear-toggle-mute-key();
     spacing: 16px;
     SettingsTitle { text: "Voice & video"; }
     // Each row's two columns take half the width each, whatever is in them:
@@ -762,6 +770,40 @@ export component VoiceSettings inherits VerticalLayout {
             committed => { root.preferences-changed(); }
         }
         Label { text: "How long your microphone keeps sending after you let go of the key, so the end of a word isn't cut off."; }
+    }
+    VerticalLayout {
+        spacing: 8px;
+        SettingsHeading { text: "TOGGLE MUTE"; }
+        HorizontalLayout {
+            spacing: 8px; alignment: start;
+            Rectangle {
+                width: 200px; height: 36px; border-radius: 8px; background: Theme.sunken;
+                border-width: root.toggle-mute-recording ? 2px : 0px; border-color: Theme.accent;
+                accessible-role: text;
+                accessible-label: "Toggle mute keybind";
+                accessible-value: root.toggle-mute-key != "" ? root.toggle-mute-key : "No keybind set";
+                Text {
+                    x: 12px; width: parent.width - 24px; overflow: elide; font-size: 14px;
+                    text: root.toggle-mute-recording ? "Press a key..." : root.toggle-mute-key != "" ? root.toggle-mute-key : "No keybind set";
+                    color: root.toggle-mute-key != "" && !root.toggle-mute-recording ? Theme.text : Theme.muted;
+                    font-weight: root.toggle-mute-key != "" && !root.toggle-mute-recording ? 600 : 400;
+                }
+            }
+            ActionButton {
+                text: root.toggle-mute-recording ? "Stop recording" : root.toggle-mute-key == "" ? "Record keybind" : "Edit keybind";
+                danger: root.toggle-mute-recording;
+                clicked => { root.record-toggle-mute-key(!root.toggle-mute-recording); }
+            }
+            if root.toggle-mute-key != "" && !root.toggle-mute-recording: ActionButton {
+                text: "Clear";
+                clicked => { root.clear-toggle-mute-key(); }
+            }
+        }
+        Label {
+            text: root.toggle-mute-recording ? "Press a key, or Mouse 4 or Mouse 5, to mute and unmute with. Escape stops without changing it."
+                : root.toggle-mute-key == "" ? "Pick a key or a mouse side button that mutes your microphone in a call, and unmutes it the next time. It works with voice activity or push to talk."
+                : root.toggle-mute-note;
+        }
     }
     if root.discord && root.input-mode == 0: VerticalLayout {
         spacing: 8px;

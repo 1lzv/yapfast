@@ -88,6 +88,20 @@ with Bluetooth headsets, a device unplugged during a call, a default device
 changed during a call, exclusive-mode applications, and whether the
 communications ducking setting turns other sound down during a call.
 
+## Toggle mute on Windows
+
+Settings → Voice & video → Toggle mute takes a key or a mouse side button:
+Mouse 4 is XBUTTON1 and Mouse 5 is XBUTTON2. One press mutes the microphone and
+the next unmutes it, with any app in front, and voice activity stays on. A low-level hook
+(`WH_KEYBOARD_LL` or `WH_MOUSE_LL`) on a thread of its own hears it, injects
+nothing into any other process and passes every event on, so the mouse works
+as before; the thread sleeps between presses. See
+[Toggle mute](discord/voice.md#toggle-mute). Windows keeps a hook from seeing
+input aimed at a program running as administrator, so a game started that way
+needs Yapfast started as administrator too. Not checked on real Windows yet
+with a game in front, nor under Wine; the unit tests cover the decoding, and
+an ignored test sends Mouse 4 with `SendInput`.
+
 ## Go Live on Windows
 
 Sharing, watching and playing a video run in the stream worker, as on Linux:

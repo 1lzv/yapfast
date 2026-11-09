@@ -951,6 +951,63 @@ fn push_to_talk_keeps_its_mode_key_and_release_delay() {
 }
 
 #[test]
+fn toggle_mute_keeps_its_key_apart_from_the_input_mode() {
+    i_slint_backend_testing::init_no_event_loop();
+    let defaults: Layout = serde_json::from_str("{}").unwrap();
+    assert_eq!(defaults.toggle_mute_key, None, "no key until one is chosen");
+    // Mouse 4 is saved as the scan code Windows' side buttons share with
+    // push to talk; voice activity stays on.
+    let layout: Layout = serde_json::from_value(serde_json::json!({
+        "toggle_mute_key": { "scancode": 4294901764u32, "name": "Mouse 4" },
+    }))
+    .unwrap();
+    assert_eq!(layout.input_mode, InputMode::VoiceActivity);
+    assert_eq!(
+        layout.push_to_talk_key, None,
+        "it isn't the push-to-talk key"
+    );
+    let window = classic_window();
+    layout.apply(&window);
+    assert_eq!(window.get_toggle_mute_key(), "Mouse 4");
+    assert_eq!(window.get_talk_key(), "");
+    assert_eq!(window.get_input_mode(), 0);
+    let saved = serde_json::to_value(&layout).unwrap();
+    assert_eq!(saved["toggle_mute_key"]["scancode"], 0xFFFF_0004u32);
+    assert_eq!(saved["toggle_mute_key"]["name"], "Mouse 4");
+    defaults.apply(&window);
+    assert_eq!(window.get_toggle_mute_key(), "");
+}
+
+#[test]
+fn a_quick_second_press_undoes_the_first_before_the_call_answers() {
+    use std::time::{Duration, Instant};
+    let now = Instant::now();
+    // Unmuted, a press asks for a mute.
+    assert!(next_mute(false, None, now));
+    // The call still shows unmuted when the next press comes: it unmutes,
+    // rather than asking for the same mute twice.
+    assert!(!next_mute(
+        false,
+        Some((true, now)),
+        now + Duration::from_millis(50)
+    ));
+    // Once the call shows the mute, the pending ask is spent.
+    assert!(!next_mute(
+        true,
+        Some((true, now)),
+        now + Duration::from_millis(300)
+    ));
+    // An ask nobody answered doesn't hold the next press hostage forever.
+    assert!(next_mute(
+        false,
+        Some((true, now)),
+        now + Duration::from_secs(5)
+    ));
+    // Muted, a press asks to unmute.
+    assert!(!next_mute(true, None, now));
+}
+
+#[test]
 fn each_sounds_own_volume_counts_only_while_adjusting_each() {
     i_slint_backend_testing::init_no_event_loop();
     let defaults: Layout = serde_json::from_str("{}").unwrap();
@@ -3875,6 +3932,9 @@ fn callbacks_preserve_drafts_scope_voice_and_clear_session_inputs() {
     assert!(window.get_unmute_on_join() && !window.get_deafen_on_join());
     window.invoke_toggle_mute();
     assert!(!window.get_unmute_on_join() && adapter.borrow().layout.unmute_on_join == Some(false));
+    // The toggle-mute key is for calls: out of one it changes nothing.
+    window.invoke_global_toggle_mute();
+    assert!(!window.get_unmute_on_join() && !window.get_voice_active());
     let voice_room = rooms.iter().find(|room| room.voice).unwrap();
     // Clicking a voice channel joins it and leaves the channel on screen,
     // as Discord's client does; clicking it again shows the call.
@@ -3902,6 +3962,15 @@ fn callbacks_preserve_drafts_scope_voice_and_clear_session_inputs() {
     }));
     window.invoke_toggle_mute();
     assert!(!window.get_muted());
+    // The toggle-mute key mutes and unmutes the call as the button does,
+    // without changing how the microphone is sent.
+    let mode = adapter.borrow().layout.input_mode;
+    window.invoke_global_toggle_mute();
+    assert!(window.get_muted() && window.get_voice_active());
+    window.invoke_global_toggle_mute();
+    assert!(!window.get_muted());
+    assert_eq!(adapter.borrow().layout.input_mode, mode);
+    assert_eq!(mode, InputMode::VoiceActivity);
     window.invoke_toggle_deafen();
     assert!(window.get_muted() && window.get_deafened());
     window.set_password("secret that must be cleared".into());

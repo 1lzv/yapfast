@@ -3857,6 +3857,80 @@ async fn calls_in_dms() {
     snapshot_where(&discord, |snapshot| !snapshot.voice.contains_key(&dm)).await;
 }
 
+/// Mutes and unmutes the way the toggle-mute key does, in the call Alice is in
+/// on `channel`: Discord is told in her voice state, and everyone in the
+/// call, as the fake shows it, sees her muted and then not. Her voice mode
+/// isn't touched, and each change comes once.
+async fn mute_toggles(discord: &Discord, guild: &str, channel: &str) {
+    let alice = |snapshot: &Snapshot| {
+        snapshot.voice.get(channel).and_then(|members| {
+            members
+                .iter()
+                .find(|member| member.name == "Alice")
+                .map(|member| (member.muted, member.deafened))
+        })
+    };
+    snapshot_where(discord, |snapshot| alice(snapshot) == Some((false, false))).await;
+    discord.set_self(guild, channel, true, false, false);
+    snapshot_where(discord, |snapshot| alice(snapshot) == Some((true, false))).await;
+    discord.set_self(guild, channel, false, false, false);
+    snapshot_where(discord, |snapshot| alice(snapshot) == Some((false, false))).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
+async fn toggling_mute_reaches_the_others_in_server_and_private_calls() {
+    let Fixture {
+        _fake,
+        discord,
+        guild,
+        lounge,
+        bob,
+        ..
+    } = Fixture::start("toggling_mute_reaches_the_others_in_server_and_private_calls").await;
+    // In a server's voice channel.
+    let assigned = discord.join(&guild, &lounge).await.unwrap();
+    let call = timeout(
+        WAIT,
+        Call::connect(&assigned, &guild, &lounge, std::sync::Arc::new(Quiet)),
+    )
+    .await
+    .expect("timed out connecting to voice")
+    .unwrap();
+    mute_toggles(&discord, &guild, &lounge).await;
+    call.leave();
+    discord.leave(&guild);
+    snapshot_where(&discord, |snapshot| {
+        !snapshot
+            .voice
+            .get(&lounge)
+            .is_some_and(|members| members.iter().any(|member| member.name == "Alice"))
+    })
+    .await;
+
+    // In a private call, which Discord keeps under no server at all.
+    let dm = discord
+        .snapshots()
+        .borrow()
+        .conversations
+        .iter()
+        .find(|conversation| conversation.person.as_deref() == Some(bob.as_str()))
+        .unwrap()
+        .id
+        .clone();
+    let assigned = discord.join(PRIVATE, &dm).await.unwrap();
+    let call = timeout(
+        WAIT,
+        Call::connect(&assigned, PRIVATE, &dm, std::sync::Arc::new(Quiet)),
+    )
+    .await
+    .expect("timed out connecting to the DM call")
+    .unwrap();
+    mute_toggles(&discord, PRIVATE, &dm).await;
+    call.leave();
+    discord.leave(PRIVATE);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "starts testing/fake_discord.ts with bun; run scripts/test-fake-discord"]
 async fn rings_and_befriends() {

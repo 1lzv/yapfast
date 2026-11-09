@@ -40,6 +40,8 @@ mod protocol;
 #[cfg(feature = "desktop")]
 mod push_to_talk;
 #[cfg(feature = "desktop")]
+mod toggle_mute;
+#[cfg(feature = "desktop")]
 mod tray;
 #[cfg(feature = "desktop")]
 mod twemoji;

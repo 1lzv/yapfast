@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
     rc::Rc,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -189,6 +189,7 @@ pub fn run(
     watch_window(&window, &adapter);
     adapter.borrow_mut().watch_away();
     adapter.borrow_mut().watch_talk_key(&window);
+    adapter.borrow_mut().watch_toggle_mute_key(&window);
     adapter.borrow().show_protocol(&window);
     if !preview {
         adapter.borrow_mut().pending_link = open_link;
@@ -325,6 +326,63 @@ fn navigate(
         }
     });
 }
+
+/// Whether a press of the toggle-mute key should mute (`true`) or unmute.
+/// The call answers a mute a moment after it's asked for, so a press before
+/// that goes on from what the last one asked for (`pending`, with when), not
+/// from what the call still shows (`shown`): two quick presses end where they
+/// began instead of asking for the same mute twice.
+fn next_mute(shown: bool, pending: Option<(bool, Instant)>, now: Instant) -> bool {
+    match pending {
+        Some((asked, at)) if asked != shown && now.saturating_duration_since(at) < MUTE_ANSWER => {
+            !asked
+        }
+        _ => !shown,
+    }
+}
+
+/// The key settings are recording, if any: the next key or side button
+/// pressed becomes it.
+#[derive(Clone, Copy)]
+enum Recording {
+    Talk,
+    ToggleMute,
+}
+
+impl Recording {
+    fn now(window: &YapfastWindow) -> Option<Self> {
+        if window.get_talk_recording() {
+            Some(Self::Talk)
+        } else if window.get_toggle_mute_recording() {
+            Some(Self::ToggleMute)
+        } else {
+            None
+        }
+    }
+
+    fn stop(self, window: &YapfastWindow) {
+        match self {
+            Self::Talk => window.set_talk_recording(false),
+            Self::ToggleMute => window.set_toggle_mute_recording(false),
+        }
+    }
+
+    fn keep(
+        self,
+        adapter: &mut Adapter,
+        window: &YapfastWindow,
+        key: crate::push_to_talk::Keybind,
+    ) {
+        match self {
+            Self::Talk => adapter.set_talk_key(window, key),
+            Self::ToggleMute => adapter.set_toggle_mute_key(window, key),
+        }
+    }
+}
+
+/// How long a mute the toggle-mute key asked for stands for the call's state
+/// while the call hasn't yet answered it, so a quick second press undoes it.
+const MUTE_ANSWER: Duration = Duration::from_millis(1500);
 
 /// Follows the native window's focus, for notifications, zooms the window
 /// with Ctrl and +, - and 0 or the scroll wheel, keeping the level in the
@@ -531,27 +589,28 @@ fn watch_window(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
                 // Windows' two side buttons are recordable shortcuts too.
                 #[cfg(windows)]
                 if let Some(window) = weak.upgrade()
-                    && window.get_talk_recording()
+                    && let Some(recording) = Recording::now(&window)
                     && let Some(recorded) = crate::push_to_talk::Keybind::recorded_mouse(event)
                 {
-                    window.set_talk_recording(false);
+                    recording.stop(&window);
                     let (adapter, weak) = (adapter.clone(), weak.clone());
                     slint::Timer::single_shot(Duration::ZERO, move || {
                         if let (Some(adapter), Some(window)) = (adapter.upgrade(), weak.upgrade()) {
-                            adapter.borrow_mut().set_talk_key(&window, recorded);
+                            recording.keep(&mut adapter.borrow_mut(), &window, recorded);
                         }
                     });
                     return EventResult::PreventDefault;
                 }
-                // While recording the push-to-talk key, the next key becomes
-                // it, and Escape stops; either way only the recorder sees it.
+                // While recording the push-to-talk or toggle-mute key, the
+                // next key becomes it, and Escape stops; either way only the
+                // recorder sees it.
                 if let WindowEvent::KeyboardInput { event: key, .. } = event
                     && key.state == ElementState::Pressed
                     && let Some(window) = weak.upgrade()
-                    && window.get_talk_recording()
+                    && let Some(recording) = Recording::now(&window)
                 {
                     if !key.repeat {
-                        window.set_talk_recording(false);
+                        recording.stop(&window);
                         let recorded = (key.logical_key != Key::Named(NamedKey::Escape))
                             .then(|| crate::push_to_talk::Keybind::recorded(key))
                             .flatten();
@@ -561,12 +620,22 @@ fn watch_window(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
                                 if let (Some(adapter), Some(window)) =
                                     (adapter.upgrade(), weak.upgrade())
                                 {
-                                    adapter.borrow_mut().set_talk_key(&window, recorded);
+                                    recording.keep(&mut adapter.borrow_mut(), &window, recorded);
                                 }
                             });
                         }
                     }
                     return EventResult::PreventDefault;
+                }
+                // Without a global hook, the toggle-mute key works while the
+                // window is in front; the keys above are the recorder's.
+                if crate::toggle_mute::window_event(event) {
+                    let (adapter, weak) = (adapter.clone(), weak.clone());
+                    slint::Timer::single_shot(Duration::ZERO, move || {
+                        if let (Some(adapter), Some(window)) = (adapter.upgrade(), weak.upgrade()) {
+                            adapter.borrow_mut().toggle_mute_pressed(&window);
+                        }
+                    });
                 }
                 // Ctrl+K opens the quick switcher, or closes it, wherever the
                 // focus is, as in Discord; not over the settings or a link
@@ -658,7 +727,8 @@ fn watch_window(window: &YapfastWindow, adapter: &Rc<RefCell<Adapter>>) {
                     && window.get_workspace()
                     && !window.get_settings_open()
                 {
-                    if *state == ElementState::Pressed {
+                    // Unless the button is the toggle-mute key, which only toggles.
+                    if *state == ElementState::Pressed && !crate::toggle_mute::takes(*button) {
                         navigate(&adapter, &weak, action);
                     }
                     return EventResult::PreventDefault;
@@ -1261,6 +1331,9 @@ struct Layout {
     input_mode: InputMode,
     push_to_talk_key: Option<crate::push_to_talk::Keybind>,
     push_to_talk_release_delay: Option<u32>,
+    /// The key or side button that mutes and unmutes the microphone in any
+    /// app, whatever the input mode.
+    toggle_mute_key: Option<crate::push_to_talk::Keybind>,
     /// How loud every call sends the microphone and plays, as sliders'
     /// percentages from 0% to 200%; 100% unless changed.
     microphone_volume: Option<u8>,
@@ -1581,6 +1654,13 @@ impl Layout {
         );
         window.set_talk_delay(self.release_delay() as i32);
         yapfast_core::push_to_talk::set_release_delay(self.release_delay());
+        window.set_toggle_mute_key(
+            self.toggle_mute_key
+                .as_ref()
+                .map(|key| key.name.as_str())
+                .unwrap_or_default()
+                .into(),
+        );
         window.set_microphone_volume(self.microphone_volume.unwrap_or(100).into());
         window.set_speaker_volume(self.speaker_volume.unwrap_or(100).into());
         play_call_volumes(window);
@@ -2103,6 +2183,11 @@ struct Adapter {
     /// Watches the push-to-talk key while push to talk is on and it's set,
     /// with or without the window.
     talk_key: Option<crate::push_to_talk::Watcher>,
+    /// Watches the toggle-mute key whenever it's set, in any input mode.
+    toggle_mute_key: Option<crate::toggle_mute::Watcher>,
+    /// The mute the toggle-mute key last asked for and when, until the call
+    /// shows it.
+    pending_mute: Option<(bool, Instant)>,
     /// Previews of the pictures waiting in the composer, by file; `None` while
     /// one is read, or when it can't be.
     thumbnails: HashMap<PathBuf, Option<pictures::Thumbnail>>,
@@ -2392,6 +2477,8 @@ impl Adapter {
                 #[cfg(feature = "discord")]
                 gate_meter: None,
                 talk_key: None,
+                toggle_mute_key: None,
+                pending_mute: None,
                 thumbnails: HashMap::new(),
                 pasted: None,
                 drag_over: false,
@@ -2449,6 +2536,76 @@ impl Adapter {
         self.watch_talk_key(window);
     }
 
+    /// Starts, changes or stops watching the toggle-mute key as settings say,
+    /// and shows where it works.
+    fn watch_toggle_mute_key(&mut self, window: &YapfastWindow) {
+        let wanted = self.layout.toggle_mute_key.as_ref();
+        if self
+            .toggle_mute_key
+            .as_ref()
+            .map(crate::toggle_mute::Watcher::key)
+            != wanted
+        {
+            // The old one goes first, so its hook ends before the new one starts.
+            self.toggle_mute_key = None;
+            self.toggle_mute_key = wanted.cloned().map(|key| {
+                let (noted, pressed) = (window.as_weak(), window.as_weak());
+                crate::toggle_mute::Watcher::start(
+                    key,
+                    move |reach| {
+                        let _ = noted.upgrade_in_event_loop(move |window| {
+                            window.set_toggle_mute_note(crate::toggle_mute::note(&reach).into());
+                        });
+                    },
+                    // The key's thread only asks; the window's own thread
+                    // toggles, as a click on the mute button does.
+                    move || {
+                        let _ = pressed.upgrade_in_event_loop(|window| {
+                            window.invoke_global_toggle_mute();
+                        });
+                    },
+                )
+            });
+        }
+        let note = self
+            .toggle_mute_key
+            .as_ref()
+            .map(|watcher| crate::toggle_mute::note(&watcher.reach()));
+        window.set_toggle_mute_note(note.unwrap_or_default().into());
+    }
+
+    /// Makes a recorded key the toggle-mute key.
+    fn set_toggle_mute_key(&mut self, window: &YapfastWindow, key: crate::push_to_talk::Keybind) {
+        tracing::info!(key = key.name, "toggle-mute key recorded");
+        window.set_toggle_mute_key(key.name.as_str().into());
+        self.layout.toggle_mute_key = Some(key);
+        self.layout.write(&self.root);
+        self.watch_toggle_mute_key(window);
+    }
+
+    /// Stops using a toggle-mute key.
+    fn clear_toggle_mute_key(&mut self, window: &YapfastWindow) {
+        window.set_toggle_mute_key("".into());
+        self.layout.toggle_mute_key = None;
+        self.layout.write(&self.root);
+        self.watch_toggle_mute_key(window);
+    }
+
+    /// The toggle-mute key was pressed: mutes the microphone, or unmutes it,
+    /// as the mute button does, so Discord and the people in the call get it
+    /// too. Out of a call it does nothing, unlike the button, which sets
+    /// whether the next call starts muted.
+    fn toggle_mute_pressed(&mut self, window: &YapfastWindow) {
+        // Settings recording a key take the press as the key, not as a toggle.
+        if !self.app.state.voice.active() || Recording::now(window).is_some() {
+            return;
+        }
+        let now = Instant::now();
+        let muted = next_mute(self.app.state.voice.muted, self.pending_mute.take(), now);
+        self.pending_mute = Some((muted, now));
+        self.action(window, Action::Voice(voice::Command::Mute(muted)));
+    }
+
     /// Shows whether Discord protocol links open here, as the desktop
     /// has it rather than as a setting remembers it.
     fn show_protocol(&self, window: &YapfastWindow) {
@@ -2462,6 +2619,7 @@ impl Adapter {
         self.models.attach(window);
         self.layout.apply(window);
         self.watch_talk_key(window);
+        self.watch_toggle_mute_key(window);
         self.show_protocol(window);
         // The theme being edited goes unsaved with the old window, and rows
         // may carry its mention colour; the refresh after attaching builds

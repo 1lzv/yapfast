@@ -2320,6 +2320,51 @@ fn the_preview_lists_and_chooses_real_devices_across_calls() {
 }
 
 #[test]
+fn toggling_mute_asks_the_call_for_it_and_survives_switching_the_microphone() {
+    // What the toggle-mute key sends is the mute button's own command, so
+    // the voice worker tells Discord and the others on the call; the same in
+    // a server's voice channel and in a private call.
+    let call = |room: &str, muted: bool| voice::State {
+        phase: Phase::Connected,
+        room: Some(room.into()),
+        muted,
+        ..Default::default()
+    };
+    for room in ["lounge", "dm-call"] {
+        let mut app = Application::default();
+        app.apply(Event::Voice(call(room, false)));
+        assert!(matches!(
+            app.dispatch(Action::Voice(voice::Command::Mute(true)))
+                .as_slice(),
+            [
+                Effect::Backend(Command::Voice(voice::Command::Mute(true))),
+                Effect::Sound(Sound::Mute)
+            ]
+        ));
+        // The call answers that it is muted.
+        app.apply(Event::Voice(call(room, true)));
+        // Switching the microphone while muted asks for no unmute and plays
+        // no sound, and the call stays muted.
+        let effects = app.dispatch(Action::Voice(voice::Command::Microphone("mic-b".into())));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Backend(Command::Voice(voice::Command::Microphone(id)))] if id == "mic-b"
+        ));
+        assert!(app.state.voice.muted);
+        assert!(matches!(
+            app.dispatch(Action::Voice(voice::Command::Mute(false)))
+                .as_slice(),
+            [
+                Effect::Backend(Command::Voice(voice::Command::Mute(false))),
+                Effect::Sound(Sound::Unmute)
+            ]
+        ));
+        app.apply(Event::Voice(call(room, false)));
+        assert!(!app.state.voice.muted);
+    }
+}
+
+#[test]
 fn preview_and_voice_switching_need_no_backend_and_voice_survives_navigation() {
     let mut app = Application::default();
     assert!(app.dispatch(Action::Preview).is_empty());
