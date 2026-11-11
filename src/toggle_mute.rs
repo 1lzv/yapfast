@@ -188,8 +188,15 @@ mod windows {
     };
 
     use windows_sys::Win32::{
-        Foundation::{LPARAM, LRESULT, WPARAM},
-        System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
+        Foundation::{CloseHandle, GetLastError, HANDLE, LPARAM, LRESULT, WPARAM},
+        Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
+        System::{
+            LibraryLoader::GetModuleHandleW,
+            Threading::{
+                GetCurrentProcess, GetCurrentThread, GetCurrentThreadId, OpenProcessToken,
+                SetThreadPriority, THREAD_PRIORITY_HIGHEST,
+            },
+        },
         UI::WindowsAndMessaging::{
             CallNextHookEx, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG,
             MSLLHOOKSTRUCT, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SetWindowsHookExW,
@@ -208,6 +215,31 @@ mod windows {
     /// Whether the watched keyboard key is down, so its repeats count once.
     static DOWN: Edge = Edge::new();
 
+    /// Whether Yapfast runs as administrator. Windows hands a hook no input
+    /// aimed at a window of a higher privilege, such as a game started as
+    /// administrator, so the log says which side Yapfast is on.
+    fn elevated() -> Option<bool> {
+        // SAFETY: the token handle is ours until closed, and the buffer is the
+        // size the call is told.
+        unsafe {
+            let mut token: HANDLE = ptr::null_mut();
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+                return None;
+            }
+            let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+            let mut returned = 0u32;
+            let read = GetTokenInformation(
+                token,
+                TokenElevation,
+                (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+                size_of::<TOKEN_ELEVATION>() as u32,
+                &mut returned,
+            );
+            CloseHandle(token);
+            (read != 0).then_some(elevation.TokenIsElevated != 0)
+        }
+    }
+
     /// A low-level keyboard or mouse hook on a thread of its own, which sees
     /// every input event and passes each on. A press only wakes that thread's
     /// message loop, which calls the toggle outside the hook procedure: Windows
@@ -225,6 +257,12 @@ mod windows {
             KEY.store(scancode, Ordering::Relaxed);
             DOWN.up();
             let mouse = matches!(scancode, MOUSE_4 | MOUSE_5);
+            tracing::info!(
+                key = scancode,
+                mouse,
+                elevated = ?elevated(),
+                "starting the toggle-mute key hook"
+            );
             let (started, thread) = mpsc::sync_channel(1);
             let spawned = std::thread::Builder::new()
                 .name("yapfast-toggle-mute-key".into())
@@ -249,9 +287,16 @@ mod windows {
                             )
                         };
                         if hook.is_null() {
+                            tracing::warn!(
+                                error = GetLastError(),
+                                "Windows didn't install the toggle-mute key hook"
+                            );
                             let _ = started.send(None);
                             return;
                         }
+                        // The hook answers from this thread: a starved thread
+                        // answers late, and Windows drops a hook that does.
+                        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
                         let id = GetCurrentThreadId();
                         let mut message: MSG = std::mem::zeroed();
                         // Gives the thread its message queue before anyone
@@ -259,13 +304,22 @@ mod windows {
                         PeekMessageW(&mut message, ptr::null_mut(), 0, 0, PM_NOREMOVE);
                         THREAD.store(id, Ordering::Relaxed);
                         let _ = started.send(Some(id));
+                        tracing::info!("the toggle-mute key hook is installed");
                         while GetMessageW(&mut message, ptr::null_mut(), 0, 0) > 0 {
                             if message.message == WM_APP {
+                                // Logged here, not in the hook procedure, which
+                                // must answer at once. A press that never shows
+                                // in the log never reached the hook.
+                                tracing::info!("the toggle-mute key was pressed");
                                 toggle();
                             }
                         }
-                        THREAD.store(0, Ordering::Relaxed);
+                        // Only this hook's own id: a newer hook, started
+                        // while this one ended, has its own.
+                        let _ =
+                            THREAD.compare_exchange(id, 0, Ordering::Relaxed, Ordering::Relaxed);
                         UnhookWindowsHookEx(hook);
+                        tracing::info!("the toggle-mute key hook is removed");
                     }
                 });
             let thread = spawned.ok().and_then(|_| thread.recv().ok().flatten());

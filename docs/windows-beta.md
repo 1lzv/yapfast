@@ -102,6 +102,13 @@ needs Yapfast started as administrator too. Not checked on real Windows yet
 with a game in front, nor under Wine; the unit tests cover the decoding, and
 an ignored test sends Mouse 4 with `SendInput`.
 
+When Mouse 4 doesn't toggle with a game in front, `yapfast.log` says why:
+"starting the toggle-mute key hook" says whether Yapfast runs as administrator,
+"the toggle-mute key hook is installed" or a warning with Windows' error says
+whether the hook exists, and "the toggle-mute key was pressed" appears for each
+press the hook saw. A press that leaves no line never reached the hook, as
+when the game runs as administrator and Yapfast doesn't.
+
 ## Go Live on Windows
 
 Sharing, watching and playing a video run in the stream worker, as on Linux:
